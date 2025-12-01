@@ -6,7 +6,7 @@ import argparse
 from glob import glob
 from multiprocessing import Pool
 from functools import partial
-from _utils_dataset import *
+from utils_dataset import *
 
 def cvt_svg2png(svg_path, replace1, replace2, scale=7):
     '''Function: convert svg to png

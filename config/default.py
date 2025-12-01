@@ -50,7 +50,7 @@ _C.model.transformer_dim = 128 # invalid if use ViT
 _C.input_dim = 2
 _C.input_embed_dim = 384
 _C.inter_dim = 384
-_C.rgb_dim = 32
+_C.rgb_dim = 0
 _C.am_softmax = True
 _C.deg_embed = False
 _C.weight_decay = 1e-4
@@ -132,4 +132,3 @@ if __name__ == '__main__':
     import sys
     with open(sys.argv[1], 'w') as f:
         print(_C, file=f)
-

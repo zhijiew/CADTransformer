@@ -13,6 +13,7 @@ sys.path.insert(0, os.path.join(BASE_DIR, "../", ))
 sys.path.append(os.path.join(BASE_DIR, "."))
 from config import anno_config
 from bs4 import BeautifulSoup
+import signal
 
 IoU_thres=0.5
 ALL_TYPES = ["g", "svg", "path", "circle", "ellipse"]
