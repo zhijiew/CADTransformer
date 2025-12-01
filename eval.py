@@ -22,7 +22,11 @@ def do_eval(model, loaders, logger, cfg):
         valid_list = []
         with tqdm(loaders, total=len(loaders), smoothing=0.9) as _tqdm:
             for i, (image, xy, target, rgb_info, nns, offset_gt, inst_gt, index, basename) in enumerate(_tqdm):
-                seg_pred = model(image, xy, rgb_info, nns)
+                seg_pred_output = model(image, xy, rgb_info, nns)
+                if isinstance(seg_pred_output, dict):
+                    seg_pred = seg_pred_output.get("raster_logits")
+                else:
+                    seg_pred = seg_pred_output
                 seg_pred = seg_pred.contiguous().view(-1, cfg.num_class+1)
                 index = index.contiguous().view(-1).cpu().numpy()
                 target = target.view(-1, 1)[:, 0]

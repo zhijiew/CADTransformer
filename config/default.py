@@ -39,6 +39,10 @@ _C.MOMENTUM_ORIGINAL = 0.1
 _C.MOMENTUM_DECCAY = 0.5
 _C.epoch_warmup = 0
 _C.offset_weight = 0.3
+_C.lambda_raster = 1.0
+_C.lambda_vector = 1.0
+_C.lambda_align = 0.1
+_C.align_temperature = 0.07
 
 # Model
 _C.model = CN()
@@ -55,6 +59,11 @@ _C.am_softmax = True
 _C.deg_embed = False
 _C.weight_decay = 1e-4
 _C.num_class = 35
+_C.align_dim = 256
+_C.vector_in_dim = 128
+_C.vector_hidden_dim = 128
+_C.vector_out_dim = 256
+_C.vector_num_layers = 2
 
 _C.MODEL = CN()
 _C.MODEL.NAME = 'seg_hrnet'
@@ -109,6 +118,18 @@ def update_config(cfg, args):
     if args.img_size is not None:
         cfg.defrost()
         cfg.img_size = args.img_size
+    if hasattr(args, "lambda_raster"):
+        cfg.defrost()
+        cfg.lambda_raster = args.lambda_raster
+    if hasattr(args, "lambda_vector"):
+        cfg.defrost()
+        cfg.lambda_vector = args.lambda_vector
+    if hasattr(args, "lambda_align"):
+        cfg.defrost()
+        cfg.lambda_align = args.lambda_align
+    if hasattr(args, "align_temperature"):
+        cfg.defrost()
+        cfg.align_temperature = args.align_temperature
     if args.val_only:
         cfg.defrost()
         cfg.eval_only = args.val_only

@@ -1,5 +1,4 @@
 import os
-import argparse
 import torch
 from tqdm import tqdm
 from dataset import CADDataLoader, DataLoaderX
@@ -8,60 +7,16 @@ from config import config, update_config
 from models.model import CADTransformer
 from utils.utils_model import OffsetLoss
 from eval import do_eval, get_eval_criteria
+from args import parse_args
+from lib.dual_branch_cadformer import DualBranchCADFormer
+from loss.align_loss import clip_style_alignment_loss
+import torch.nn.functional as F
 
 torch.backends.cudnn.benchmark = True
 torch.autograd.set_detect_anomaly(True)
 
 num_gpus = int(os.environ["WORLD_SIZE"]) if "WORLD_SIZE" in os.environ else 1
 distributed = num_gpus > 1
-
-def parse_args():
-    parser = argparse.ArgumentParser(description='Train segmentation network')
-    parser.add_argument('--cfg',
-                        type=str,
-                        default="config/hrnet48.yaml",
-                        help='experiment configure file name'
-                        )
-    parser.add_argument('--val_only',
-                        action="store_true",
-                        help='flag to do evaluation on val set')
-    parser.add_argument('--test_only',
-                        action="store_true",
-                        help='flag to do evaluation on test set')
-    parser.add_argument('--data_root', type=str,
-                        default="/ssd1/zhiwen/projects/CADTransformer/data/floorplan_v1")
-    parser.add_argument('--embed_backbone', type=str,
-                        default="hrnet48")
-    parser.add_argument('--pretrained_model', type=str,
-                        default="./pretrained_models/HRNet_W48_C_ssld_pretrained.pth")
-    parser.add_argument("--local_rank", type=int, default=0)
-    parser.add_argument('--local-rank', type=int, default=0, dest='local_rank')
-    parser.add_argument("--log_step", type=int,
-                        default=100,
-                        help='steps for logging')
-    parser.add_argument("--img_size", type=int,
-                        default=700,
-                        help='image size of rasterized image')
-    parser.add_argument("--max_prim", type=int,
-                        default=12000,
-                        help='maximum primitive number for each batch')
-    parser.add_argument("--load_ckpt", type=str,
-                        default='',
-                        help='load checkpoint')
-    parser.add_argument("--resume_ckpt", type=str,
-                        default='',
-                        help='continue train while loading checkpoint')
-    parser.add_argument("--log_dir", type=str,
-                        default='',
-                        help='logging directory')
-    parser.add_argument('--seed', type=int, default=304)
-    parser.add_argument('--debug', action="store_true")
-    parser.add_argument('opts',
-                        help="Modify config options using the command-line",
-                        default=None,
-                        nargs=argparse.REMAINDER)
-    args = parser.parse_args()
-    return args
 
 def main():
     args = parse_args()
@@ -83,7 +38,10 @@ def main():
     device = torch.device('cuda:{}'.format(args.local_rank))
 
     # Create Model
-    model = CADTransformer(cfg)
+    if args.model == "dual_branch_cadformer":
+        model = DualBranchCADFormer(cfg)
+    else:
+        model = CADTransformer(cfg)
     CE_loss = torch.nn.CrossEntropyLoss().cuda()
 
     # Create Optimizer
@@ -189,15 +147,57 @@ def main():
 
         # training loops
         with tqdm(train_dataloader, total=len(train_dataloader), smoothing=0.9) as _tqdm:
-            for i, (image, xy, target, rgb_info, nns, offset_gt, inst_gt, index, basename) in enumerate(_tqdm):
+            for i, batch in enumerate(_tqdm):
                 optimizer.zero_grad()
 
-                seg_pred = model(image, xy, rgb_info, nns)
-                seg_pred = seg_pred.contiguous().view(-1, cfg.num_class+1)
-                target = target.view(-1, 1)[:, 0]
+                if args.model == "dual_branch_cadformer":
+                    if isinstance(batch, dict):
+                        image = batch.get("img") or batch.get("image")
+                        mask = batch.get("mask")
+                        vec_x = batch.get("vec_x")
+                        vec_edge_index = batch.get("vec_edge_index")
+                        vec_label = batch.get("vec_label")
+                    else:
+                        image = batch[0]
+                        mask = batch[2] if len(batch) > 2 else None
+                        vec_x, vec_edge_index, vec_label = None, None, None
 
-                loss_seg = CE_loss(seg_pred, target)
-                loss = loss_seg
+                    outputs = model(image, vec_x=vec_x, vec_edge_index=vec_edge_index)
+                    raster_logits = outputs["raster_logits"]
+                    vector_logits = outputs.get("vector_logits", [])
+                    rast_z = outputs.get("rast_z")
+                    vect_z = outputs.get("vect_z")
+
+                    if mask is not None:
+                        loss_raster = F.cross_entropy(raster_logits, mask)
+                    else:
+                        loss_raster = torch.tensor(0.0, device=raster_logits.device)
+
+                    vector_losses = []
+                    if vec_label is not None and vector_logits:
+                        for logit_item, label_item in zip(vector_logits, vec_label):
+                            vector_losses.append(F.cross_entropy(logit_item, label_item.to(logit_item.device)))
+                    if vector_losses:
+                        loss_vector = torch.stack(vector_losses).mean()
+                    else:
+                        loss_vector = torch.tensor(0.0, device=raster_logits.device)
+
+                    if vect_z is not None and rast_z is not None:
+                        loss_align = clip_style_alignment_loss(rast_z, vect_z, temperature=cfg.align_temperature)
+                    else:
+                        loss_align = torch.tensor(0.0, device=raster_logits.device)
+
+                    loss = cfg.lambda_raster * loss_raster + cfg.lambda_vector * loss_vector + cfg.lambda_align * loss_align
+                    loss_seg = loss_raster
+                else:
+                    image, xy, target, rgb_info, nns, offset_gt, inst_gt, index, basename = batch
+                    seg_pred = model(image, xy, rgb_info, nns)
+                    seg_pred = seg_pred.contiguous().view(-1, cfg.num_class+1)
+                    target = target.view(-1, 1)[:, 0]
+
+                    loss_seg = CE_loss(seg_pred, target)
+                    loss = loss_seg
+
                 loss.backward()
                 optimizer.step()
                 _tqdm.set_postfix(loss=loss.item(), l_seg=loss_seg.item())
